@@ -7,7 +7,7 @@ import System.IO (hPutStrLn, stderr)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (formatTime, defaultTimeLocale)
 import Control.Monad (when, forM_)
-import Control.Exception (bracket, onException) -- Neu: onException
+import Control.Exception (bracket, onException)
 import System.Exit (exitFailure)
 
 -- Konfiguration
@@ -28,17 +28,15 @@ logMsg = putStrLn
 runCmd :: String -> IO ()
 runCmd cmd = callCommand cmd
 
--- Hilfsfunktion: Löscht ein Btrfs Subvolume sicher (prüft erst Existenz)
+-- Hilfsfunktion: Löscht ein Btrfs Subvolume sicher
 safeDeleteSubvolume :: FilePath -> IO ()
 safeDeleteSubvolume path = do
     exists <- doesDirectoryExist path
     when exists $ do
         logMsg $ "Cleaning up: Deleting subvolume " ++ path
-        -- Wir fangen hier Fehler ab, damit das Cleanup nicht selbst crasht,
-        -- falls btrfs zickt (z.B. weil es kein Subvol, sondern nur ein Ordner ist)
         callProcess "btrfs" ["subvolume", "delete", path]
 
--- Mount-Logik (wie zuvor)
+-- Mount-Logik
 withMount :: FilePath -> IO a -> IO a
 withMount partitionPath action = do
     isDirEmpty <- null <$> listDirectory partitionPath
@@ -101,32 +99,35 @@ backupSubvolume subvolName subvolBasePath = do
     -- 1. Snapshot erstellen
     callProcess "btrfs" ["subvolume", "snapshot", "-r", fullSubvolPath, snapshotPath]
 
-    -- 2. Übertragung vorbereiten
+    -- 2. Nur der Transfer (ohne Buchführung)
     let transferAction = case parentSnapshot of
             Nothing -> do
                 logMsg $ "Copy " ++ snapshotPath ++ " to " ++ snapshotCopy
                 let cmd = "ionice -n " ++ ioPriority ++ " btrfs send --compressed-data --proto 0 " ++ snapshotPath ++ " | btrfs receive " ++ destDir
                 runCmd cmd
-                writeFile lastClonedFile snapshotName
 
             Just parent -> do
                 logMsg $ "Copy " ++ snapshotPath ++ " to " ++ snapshotCopy ++ " using " ++ parent ++ " as base"
                 let cmd = "ionice -n " ++ ioPriority ++ " btrfs send --compressed-data --proto 0 -p " ++ parent ++ " " ++ snapshotPath ++ " | btrfs receive " ++ destDir
                 runCmd cmd
-                writeFile lastClonedFile snapshotName
-                
-                logMsg $ "Delete " ++ parent
-                callProcess "btrfs" ["subvolume", "delete", parent]
 
-    -- 3. Übertragung durchführen mit Fehlerbehandlung (Cleanup)
-    -- onException führt den Block nur aus, wenn in transferAction ein Fehler auftritt.
-    -- Danach wird der Fehler weitergeworfen, sodass das Skript abbricht.
+    -- 3. Ausführung mit Fehlerbehandlung
     transferAction `onException` do
         hPutStrLn stderr $ "Transaction failed for " ++ subvolName ++ ". Reverting..."
         safeDeleteSubvolume snapshotPath -- Lösche lokalen, neu erstellten Snapshot
         safeDeleteSubvolume snapshotCopy -- Lösche (kaputten) Remote Snapshot
 
-    -- 4. HACK (wird nur erreicht, wenn transferAction erfolgreich war)
+    -- 4. Buchführung & Cleanup (wird nur bei Erfolg erreicht)
+    logMsg $ "Updating metadata in " ++ lastClonedFile
+    writeFile lastClonedFile snapshotName
+
+    case parentSnapshot of
+        Just parent -> do
+            logMsg $ "Delete old parent snapshot " ++ parent
+            callProcess "btrfs" ["subvolume", "delete", parent]
+        Nothing -> return ()
+
+    -- 5. HACK
     callProcess "cp" ["-a", lastClonedFile, destDir]
 
 backupWinePrefix :: String -> IO ()
