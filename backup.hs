@@ -7,7 +7,7 @@ import System.IO (hPutStrLn, stderr)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (formatTime, defaultTimeLocale)
 import Control.Monad (when, forM_)
-import Control.Exception (bracket)
+import Control.Exception (bracket, onException) -- Neu: onException
 import System.Exit (exitFailure)
 
 -- Konfiguration
@@ -28,26 +28,32 @@ logMsg = putStrLn
 runCmd :: String -> IO ()
 runCmd cmd = callCommand cmd
 
--- Die extrahierte Mount-Funktion
--- Sie prüft, ob die Partition leer ist (als Indikator, dass nicht gemountet ist),
--- mountet bei Bedarf und garantiert ein Unmount, falls das Skript selbst gemountet hat.
+-- Hilfsfunktion: Löscht ein Btrfs Subvolume sicher (prüft erst Existenz)
+safeDeleteSubvolume :: FilePath -> IO ()
+safeDeleteSubvolume path = do
+    exists <- doesDirectoryExist path
+    when exists $ do
+        logMsg $ "Cleaning up: Deleting subvolume " ++ path
+        -- Wir fangen hier Fehler ab, damit das Cleanup nicht selbst crasht,
+        -- falls btrfs zickt (z.B. weil es kein Subvol, sondern nur ein Ordner ist)
+        callProcess "btrfs" ["subvolume", "delete", path]
+
+-- Mount-Logik (wie zuvor)
 withMount :: FilePath -> IO a -> IO a
 withMount partitionPath action = do
-    -- Wir prüfen, ob das Verzeichnis leer ist (Logik aus dem Originalskript)
     isDirEmpty <- null <$> listDirectory partitionPath
     
     let mountAction = if isDirEmpty
         then do
             logMsg $ partitionPath ++ " is empty trying to mount it"
             callProcess "mount" [partitionPath]
-            return True -- Rückgabewert signalisiert: Wir haben gemountet
-        else return False -- War schon gemountet
+            return True 
+        else return False 
 
     let unmountAction mountedByScript = when mountedByScript $ do
             logMsg $ "Unmount " ++ partitionPath
             callProcess "umount" [partitionPath]
 
-    -- bracket sorgt dafür, dass unmountAction auch bei Exceptions im action-Teil ausgeführt wird
     bracket mountAction unmountAction (const action)
 
 -- Die Haupt-Backup-Logik
@@ -92,24 +98,35 @@ backupSubvolume subvolName subvolBasePath = do
             return Nothing
 
     logMsg $ "Snapshot " ++ subvolName ++ " as " ++ snapshotPath
+    -- 1. Snapshot erstellen
     callProcess "btrfs" ["subvolume", "snapshot", "-r", fullSubvolPath, snapshotPath]
 
-    case parentSnapshot of
-        Nothing -> do
-            logMsg $ "Copy " ++ snapshotPath ++ " to " ++ snapshotCopy
-            let cmd = "ionice -n " ++ ioPriority ++ " btrfs send --compressed-data --proto 0 " ++ snapshotPath ++ " | btrfs receive " ++ destDir
-            runCmd cmd
-            writeFile lastClonedFile snapshotName
+    -- 2. Übertragung vorbereiten
+    let transferAction = case parentSnapshot of
+            Nothing -> do
+                logMsg $ "Copy " ++ snapshotPath ++ " to " ++ snapshotCopy
+                let cmd = "ionice -n " ++ ioPriority ++ " btrfs send --compressed-data --proto 0 " ++ snapshotPath ++ " | btrfs receive " ++ destDir
+                runCmd cmd
+                writeFile lastClonedFile snapshotName
 
-        Just parent -> do
-            logMsg $ "Copy " ++ snapshotPath ++ " to " ++ snapshotCopy ++ " using " ++ parent ++ " as base"
-            let cmd = "ionice -n " ++ ioPriority ++ " btrfs send --compressed-data --proto 0 -p " ++ parent ++ " " ++ snapshotPath ++ " | btrfs receive " ++ destDir
-            runCmd cmd
-            writeFile lastClonedFile snapshotName
-            
-            logMsg $ "Delete " ++ parent
-            callProcess "btrfs" ["subvolume", "delete", parent]
+            Just parent -> do
+                logMsg $ "Copy " ++ snapshotPath ++ " to " ++ snapshotCopy ++ " using " ++ parent ++ " as base"
+                let cmd = "ionice -n " ++ ioPriority ++ " btrfs send --compressed-data --proto 0 -p " ++ parent ++ " " ++ snapshotPath ++ " | btrfs receive " ++ destDir
+                runCmd cmd
+                writeFile lastClonedFile snapshotName
+                
+                logMsg $ "Delete " ++ parent
+                callProcess "btrfs" ["subvolume", "delete", parent]
 
+    -- 3. Übertragung durchführen mit Fehlerbehandlung (Cleanup)
+    -- onException führt den Block nur aus, wenn in transferAction ein Fehler auftritt.
+    -- Danach wird der Fehler weitergeworfen, sodass das Skript abbricht.
+    transferAction `onException` do
+        hPutStrLn stderr $ "Transaction failed for " ++ subvolName ++ ". Reverting..."
+        safeDeleteSubvolume snapshotPath -- Lösche lokalen, neu erstellten Snapshot
+        safeDeleteSubvolume snapshotCopy -- Lösche (kaputten) Remote Snapshot
+
+    -- 4. HACK (wird nur erreicht, wenn transferAction erfolgreich war)
     callProcess "cp" ["-a", lastClonedFile, destDir]
 
 backupWinePrefix :: String -> IO ()
@@ -121,17 +138,14 @@ backupGameWinePrefices = do
 
 main :: IO ()
 main = withMount destPartition $ do
-    -- Prüfe Destination Dir
     destExists <- doesDirectoryExist destDir
     when (not destExists) $ do
             hPutStrLn stderr $ destDir ++ " is not a directory"
             exitFailure
 
-    -- BEGIN backup subvolumes
     backupSubvolume "johannes" "/home"
     backupGameWinePrefices
     backupSubvolume "Steam" "/home/johannes/.local/share/"
     backupSubvolume "EA-Snapshot" "/home/johannes/wine-prefices/Bottles"
     backupSubvolume "Ubisoft-Connect" "/home/johannes/wine-prefices/Bottles"
     backupSubvolume "Heroic" "/home/johannes/Games"
-    -- END backup subvolumes
