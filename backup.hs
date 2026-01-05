@@ -3,11 +3,11 @@
 import System.Process (callCommand, callProcess)
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
 import System.FilePath ((</>))
-import System.IO (hPutStrLn, stderr)
+import System.IO (hPutStrLn, stderr, withFile, IOMode(..), hGetContents)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (formatTime, defaultTimeLocale)
 import Control.Monad (when, forM_)
-import Control.Exception (bracket, onException)
+import Control.Exception (bracket, evaluate, onException)
 import System.Exit (exitFailure)
 
 -- Konfiguration
@@ -27,6 +27,13 @@ logMsg = putStrLn
 -- Hilfsfunktion um Befehle auszuführen
 runCmd :: String -> IO ()
 runCmd cmd = callCommand cmd
+
+readFileStrict :: FilePath -> IO String
+readFileStrict f = withFile f ReadMode $ \h -> do
+    content <- hGetContents h
+    -- Wir erzwingen das vollständige Lesen durch 'evaluate (length content)'
+    _ <- evaluate (length content)
+    return content
 
 -- Hilfsfunktion: Löscht ein Btrfs Subvolume sicher
 safeDeleteSubvolume :: FilePath -> IO ()
@@ -73,7 +80,7 @@ backupSubvolume subvolName subvolBasePath = do
     
     parentSnapshot <- if hasLastFile
         then do
-            content <- readFile lastClonedFile
+            content <- readFileStrict lastClonedFile
             let rawParentName = head (lines content) 
             logMsg $ "Read the base snapshot from " ++ lastClonedFile
             
