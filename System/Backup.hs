@@ -14,7 +14,7 @@ import System.IO (hPutStrLn, stderr, withFile, IOMode(..), hGetContents)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (formatTime, defaultTimeLocale)
 import Control.Monad (when, forM_)
-import Control.Exception (bracket, evaluate, onException)
+import Control.Exception (bracket, evaluate, onException, throwIO)
 import System.Exit (exitFailure)
 
 data BackupConfiguration = BackupConfiguration {
@@ -72,7 +72,24 @@ checkBackupConfiguration BackupConfiguration {..} = do
 
 -- Die Haupt-Backup-Logik
 backupSubvolumeWithConfig :: BackupConfiguration -> String -> FilePath -> IO ()
-backupSubvolumeWithConfig BackupConfiguration {..} subvolName subvolBasePath = do
+backupSubvolumeWithConfig initialConfig subvolName subvolBasePath = do
+    -- Pfad-Erkennung: Prüfen, ob das konfigurierte Verzeichnis existiert.
+    -- Falls nicht, prüfen wir auf den NixOS-Pfad.
+    actualSnapshotDir <- do
+        let configuredDir = snapshotDir initialConfig
+        exists <- doesDirectoryExist configuredDir
+        if exists
+            then return configuredDir
+            else do
+                let nixosPath = "/btrfs-root/root" ++ configuredDir
+                logMsg $ "Try to find snapshot directory on NixOS: " ++ nixosPath
+                nixosExists <- doesDirectoryExist nixosPath
+                if nixosExists
+                    then return nixosPath
+                    else throwIO . userError $ "Could not find snapshot directory " ++ configuredDir
+
+    let BackupConfiguration {..} = initialConfig { snapshotDir = actualSnapshotDir }
+
     let fullSubvolPath = subvolBasePath </> subvolName
     
     logMsg $ "Backup " ++ subvolName ++ " at " ++ fullSubvolPath
