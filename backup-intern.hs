@@ -18,7 +18,7 @@ destPartition :: FilePath
 destPartition = "/backup-intern"
 
 destDir :: FilePath
-destDir = destPartition </> "Snapshots"
+destDir = destPartition </> "backups"
 
 -- Hilfsfunktion für Logging
 logMsg :: String -> IO ()
