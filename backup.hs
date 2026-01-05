@@ -130,13 +130,6 @@ backupSubvolume subvolName subvolBasePath = do
     -- 5. HACK
     callProcess "cp" ["-a", lastClonedFile, destDir]
 
-backupWinePrefix :: String -> IO ()
-backupWinePrefix prefix = backupSubvolume prefix "/home/johannes/wine-prefices"
-
-backupGameWinePrefices :: IO ()
-backupGameWinePrefices = do
-    forM_ ["gogGalaxy", "epicgameslauncher"] backupWinePrefix
-
 main :: IO ()
 main = withMount destPartition $ do
     destExists <- doesDirectoryExist destDir
@@ -145,7 +138,6 @@ main = withMount destPartition $ do
             exitFailure
 
     backupSubvolume "johannes" "/home"
-    backupGameWinePrefices
     backupSubvolume "Steam" "/home/johannes/.local/share/"
     backupSubvolume "EA-Snapshot" "/home/johannes/wine-prefices/Bottles"
     backupSubvolume "Ubisoft-Connect" "/home/johannes/wine-prefices/Bottles"
