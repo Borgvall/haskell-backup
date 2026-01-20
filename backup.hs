@@ -26,6 +26,6 @@ main = withMount destPartition $ do
 
     backupSubvolume "johannes" "/home"
     backupSubvolume "Steam" "/home/johannes/.local/share/"
-    backupSubvolume "EA-Snapshot" "/home/johannes/wine-prefices/Bottles"
-    backupSubvolume "Ubisoft-Connect" "/home/johannes/wine-prefices/Bottles"
+    backupSubvolume "EA-Snapshot" "/home/johannes/.local/share/Decanter"
+    backupSubvolume "Ubisoft-Connect" "/home/johannes/.local/share/Decanter"
     backupSubvolume "Heroic" "/home/johannes/Games"
