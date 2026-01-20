@@ -6,15 +6,15 @@ module System.Backup (
   checkBackupConfiguration,
 ) where
 
-import System.Process (callCommand, callProcess)
+import System.Process (callCommand, callProcess, proc, createProcess, std_out, std_in, StdStream(..), waitForProcess)
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
 import System.FilePath ((</>))
-import System.IO (hPutStrLn, stderr, withFile, IOMode(..), hGetContents)
+import System.IO (hPutStrLn, stderr, withFile, IOMode(..), hGetContents, hClose)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (formatTime, defaultTimeLocale)
 import Control.Monad (when, forM_)
 import Control.Exception (bracket, evaluate, onException, throwIO)
-import System.Exit (exitFailure)
+import System.Exit (exitFailure, ExitCode(..))
 
 data BackupConfiguration = BackupConfiguration {
   snapshotDir :: FilePath,
@@ -134,16 +134,40 @@ backupSubvolumeWithConfig BackupConfiguration {..} subvolName subvolBasePath = d
     callProcess "btrfs" ["subvolume", "snapshot", "-r", fullSubvolPath, snapshotPath]
 
     -- 2. Nur der Transfer (ohne Buchführung)
-    let transferAction = case parentSnapshot of
-            Nothing -> do
-                logMsg $ "Copy " ++ snapshotPath ++ " to " ++ snapshotCopy
-                let cmd = "ionice -n " ++ ioPriority ++ " btrfs send --compressed-data --proto 0 " ++ snapshotPath ++ " | btrfs receive " ++ destDir
-                runCmd cmd
+    let transferAction = do
+            let sendBaseArgs = ["-n", ioPriority, "btrfs", "send", "--compressed-data", "--proto", "0"]
+            let sendArgs = case parentSnapshot of
+                    Nothing -> sendBaseArgs ++ [snapshotPath]
+                    Just parent -> sendBaseArgs ++ ["-p", parent, snapshotPath]
 
-            Just parent -> do
-                logMsg $ "Copy " ++ snapshotPath ++ " to " ++ snapshotCopy ++ " using " ++ parent ++ " as base"
-                let cmd = "ionice -n " ++ ioPriority ++ " btrfs send --compressed-data --proto 0 -p " ++ parent ++ " " ++ snapshotPath ++ " | btrfs receive " ++ destDir
-                runCmd cmd
+            let receiveArgs = ["receive", destDir]
+
+            logMsg $ "Streaming " ++ snapshotPath ++ " to " ++ destDir
+
+            -- Prozess 1: Sender (ionice -> btrfs send)
+            -- Wir erstellen eine Pipe für stdout
+            let senderProc = (proc "ionice" sendArgs) { std_out = CreatePipe }
+            
+            -- Prozess starten
+            (_, Just hOut, _, phSend) <- createProcess senderProc
+
+            -- Prozess 2: Empfänger (btrfs receive)
+            -- Wir nutzen das Handle vom Sender als Input
+            let receiverProc = (proc "btrfs" receiveArgs) { std_in = UseHandle hOut }
+            
+            (_, _, _, phReceive) <- createProcess receiverProc
+
+            -- Wir schließen das Handle im Elternprozess, da es nun dem Kindprozess gehört
+            -- und wir es hier nicht mehr brauchen.
+            hClose hOut
+
+            -- Auf beide Prozesse warten
+            sendExit <- waitForProcess phSend
+            recvExit <- waitForProcess phReceive
+
+            -- Fehlerprüfung
+            when (sendExit /= ExitSuccess || recvExit /= ExitSuccess) $
+                 throwIO $ userError $ "Transfer failed: Sender=" ++ show sendExit ++ ", Receiver=" ++ show recvExit
 
     -- 3. Ausführung mit Fehlerbehandlung
     transferAction `onException` do
