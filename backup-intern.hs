@@ -17,11 +17,8 @@ destDir = destPartition </> "backups"
 configuration :: BackupConfiguration
 configuration = BackupConfiguration Main.snapshotDir Main.destDir
 
-backupSubvolume :: String -> FilePath -> IO ()
-backupSubvolume = backupSubvolumeWithConfig configuration
-
 main :: IO ()
 main = withMount destPartition $ do
-    checkBackupConfiguration configuration
+    backupSubvolume <- checkBackupConfiguration configuration
 
     backupSubvolume "johannes" "/home"

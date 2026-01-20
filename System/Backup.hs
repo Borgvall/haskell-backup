@@ -4,7 +4,6 @@ module System.Backup (
   BackupConfiguration(..),
   withMount,
   checkBackupConfiguration,
-  backupSubvolumeWithConfig
 ) where
 
 import System.Process (callCommand, callProcess)
@@ -63,16 +62,13 @@ withMount partitionPath action = do
 
     bracket mountAction unmountAction (const action)
 
-checkBackupConfiguration :: BackupConfiguration -> IO ()
-checkBackupConfiguration BackupConfiguration {..} = do
-    destExists <- doesDirectoryExist destDir
+checkBackupConfiguration :: BackupConfiguration -> IO (String -> FilePath -> IO ())
+checkBackupConfiguration initialConfig = do
+    let destDir' = destDir initialConfig
+    destExists <- doesDirectoryExist destDir'
     when (not destExists) $ do
-            hPutStrLn stderr $ destDir ++ " is not a directory"
-            exitFailure
+            throwIO . userError $ destDir' ++ " is not a directory"
 
--- Die Haupt-Backup-Logik
-backupSubvolumeWithConfig :: BackupConfiguration -> String -> FilePath -> IO ()
-backupSubvolumeWithConfig initialConfig subvolName subvolBasePath = do
     -- Pfad-Erkennung: Prüfen, ob das konfigurierte Verzeichnis existiert.
     -- Falls nicht, prüfen wir auf den NixOS-Pfad.
     actualSnapshotDir <- do
@@ -88,8 +84,13 @@ backupSubvolumeWithConfig initialConfig subvolName subvolBasePath = do
                     then return nixosPath
                     else throwIO . userError $ "Could not find snapshot directory " ++ configuredDir
 
-    let BackupConfiguration {..} = initialConfig { snapshotDir = actualSnapshotDir }
+    let backupConfiguration = initialConfig { snapshotDir = actualSnapshotDir }
+    pure $ backupSubvolumeWithConfig backupConfiguration
 
+
+-- Die Haupt-Backup-Logik
+backupSubvolumeWithConfig :: BackupConfiguration -> String -> FilePath -> IO ()
+backupSubvolumeWithConfig BackupConfiguration {..} subvolName subvolBasePath = do
     let fullSubvolPath = subvolBasePath </> subvolName
     
     logMsg $ "Backup " ++ subvolName ++ " at " ++ fullSubvolPath
