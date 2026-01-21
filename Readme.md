@@ -15,7 +15,6 @@ It leverages Haskell for logic safety (using `bracket` for resource management) 
 While written in Haskell, this code does not strive for functional purity or abstract elegance. It strives to ensure that **my** backups run reliably on **my** hardware.
 
 * **Hardcoded Flexibility:** The library (`System.Backup`) contains "magic" logic to auto-detect if it's running on my NixOS setup (`/btrfs-root/root`) or my standard setup (`/snapshots`) and adjusts paths at runtime.
-* **Shell Pragmatism:** Commands are constructed as strings and executed via shell. It's not "safe" against spaces in filenames, but I don't put spaces in my subvolume names, so it works.
 * **Local Space Optimization:** The script aggressively deletes the *old* local parent snapshot after a successful transfer. I only keep the absolute latest snapshot locally to save disk space.
 
 ## Features
