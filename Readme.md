@@ -43,8 +43,9 @@ Since this is a `runhaskell` script, no compilation is strictly necessary, thoug
 ```bash
 # Must be run as root (for mounting and btrfs commands)
 sudo ./backup.hs
-
 ```
+
+For an example, how to start the backup regularly or when disks become available, see this [NixOS configuration file](https://github.com/Borgvall/nixos/blob/main/haskell-backup.nix).
 
 ## How it works (The Cycle)
 
